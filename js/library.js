@@ -3,7 +3,7 @@ import { h, $, icon, btn, toast, sheet, segmented, confirmBox, fmtDate, onLongPr
 import * as store from './store.js';
 import * as db from './db.js';
 import { keyName, norm, ALL_KEYS, fmtDuration } from './music.js';
-import { openViewer } from './viewer.js';
+import { openViewer, currentViewer } from './viewer.js';
 import { importFiles } from './importer.js';
 import { renderSetlistsNav, openSetlist, newSetlist } from './setlists.js';
 import { openSettings } from './settings.js';
@@ -45,6 +45,7 @@ export function renderLibrary() {
           : btn('tag', t('סינון'), () => filterSheet(), 'ghost'),
         btn(st.view === 'grid' ? 'grid' : 'list', t('תצוגה|lib'), () => viewSheet(), 'ghost'),
         h('button', { class: 'btn ghost band-badge' + (band.role ? ' on' : ''), title: t('להקה'), 'aria-label': t('להקה'), onclick: () => openBand() }, icon('sync'), band.role ? h('span', {}, bandLabel()) : null),
+        btn('plus', t('שיר חדש: קובץ תווים ריק לכתוב בו'), () => newSong(), 'ghost'),
         h('button', { class: 'btn labeled primary', onclick: () => file.click() }, icon('import'), h('span', {}, t('ייבוא'))), file),
       h('div', { class: 'tagbar' }),
       h('div', { class: 'grid ' + st.view })));
@@ -178,6 +179,16 @@ function row(s) {
   el.onclick = () => open(s);
   onLongPress(el, () => scoreMenu(s));
   return el;
+}
+
+// a new, empty song: made, then opened straight in the note editor
+async function newSong() {
+  const { openNewScore } = await import('./newscore.js');
+  openNewScore(async id => {
+    await openViewer({ scoreId: id, onClose: () => renderLibrary() });
+    const v = currentViewer();
+    if (v && v.scoreId === id) await v.startNoteEdit();
+  });
 }
 
 function open(s) {

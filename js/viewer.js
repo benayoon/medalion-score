@@ -60,6 +60,9 @@ class Viewer {
   get semis() { const it = this.item; return (it && it.semis != null ? it.semis : this.meta.semis) || 0; }
   set semis(v) { if (this.item) { this.item.semis = v; store.save('setlists'); } else store.updateMeta(this.scoreId, { semis: v }); }
   get partName() {
+    // while the notes are edited the part on screen stays (a first save gives the song parts of its own,
+    // and the default part would step in under the editor)
+    if (this.pinPart != null) return this.pinPart;
     const it = this.item;
     if (it && it.part != null) return it.part;
     if (this.meta.part != null) return this.meta.part;
@@ -70,7 +73,7 @@ class Viewer {
     }
     return '';
   }
-  set partName(v) { if (this.item) { this.item.part = v; store.save('setlists'); } else store.updateMeta(this.scoreId, { part: v }); }
+  set partName(v) { if (this.pinPart != null) this.pinPart = v; if (this.item) { this.item.part = v; store.save('setlists'); } else store.updateMeta(this.scoreId, { part: v }); }
   get tempo() { const it = this.item; return (it && it.tempo) || this.score.tempo || 100; }
 
   // ---------------------------------------------------------------- lifecycle
@@ -513,6 +516,7 @@ class Viewer {
     if (this.partName && this.partName.includes(' + ')) { this.partName = ''; reset = true; toast(t('עורכים את הפרטיטורה או תפקיד אחד; מוצגת הפרטיטורה')); }
     if (this.mode !== 'live' || reset) await this.setMode('live');
     if (this.mode !== 'live' || !this.engine) return;
+    this.pinPart = this.partName;
     this.el.classList.add('noteedit');
     this.toggleChrome(false);
     try {
@@ -520,7 +524,7 @@ class Viewer {
     } catch (e) {
       console.error(e);
       if (this.engine) { this.engine.edit = null; this.engine.onRender = null; }
-      this.noteEd = null; this.el.classList.remove('noteedit');
+      this.noteEd = null; this.pinPart = null; this.el.classList.remove('noteedit');
       if (this.engine) this.engine.layout(true);
       return toast(t('לא ניתן לפתוח לעריכה: {msg}', { msg: e.message || e }), 5000);
     }
@@ -529,7 +533,7 @@ class Viewer {
   async stopNoteEdit() {
     if (!this.noteEd || !await this.noteEd.close()) return;
     const saved = this.noteEd.saved;
-    this.noteEd = null;
+    this.noteEd = null; this.pinPart = null;
     this.el.classList.remove('noteedit');
     // the song as saved (its newest version), or as it was
     if (saved) await this.loadSong({});
