@@ -6,6 +6,7 @@ import { h, toast, sheet, toggle, icon, confirmBox } from './ui.js';
 import { t, locale } from './i18n.js';
 import * as store from './store.js';
 import { Peer } from './net.js';
+import { instIcon } from './instruments.js';
 
 export const band = {
   role: null,          // null | 'leader' | 'member'
@@ -375,7 +376,7 @@ export async function openBand() {
       h('button', { class: 'btn labeled primary', onclick: () => takeControl() }, t('החזרת הדפדוף אליי'))) : null,
     h('div', { class: 'list' }, ...band.peers.map(m => h('div', { class: 'li' },
       h('span', { class: 'dot ' + (m.peer.state === 'open' ? 'ok' : 'bad') }),
-      h('b', { dir: 'auto' }, m.info.name), h('span', { class: 'muted', dir: 'auto' }, m.info.instrument ? ' · ' + t(m.info.instrument) : ''),
+      m.info.instrument ? instIcon(m.info.instrument) : null, h('b', { dir: 'auto' }, m.info.name), h('span', { class: 'muted', dir: 'auto' }, m.info.instrument ? ' · ' + t(m.info.instrument) : ''),
       h('span', { class: 'muted' }, ' · ' + (m.peer.state === 'lost' ? t('החיבור נחלש…') : m.peer.state !== 'open' ? t('מנותק') : band.controlBy === m ? t('מדפדף לכולם') : m.state.missing && m.state.missing.length ? t('מקבל {n} שירים…', { n: m.state.missing.length }) : m.state.follow === false ? t('לא עוקב') : t('עוקב'))),
       m.peer.state === 'open' && band.controlBy !== m ? h('button', { class: 'btn labeled small', onclick: () => giveControl(m) }, t('העברת הדפדוף')) : null,
       m.peer.state === 'failed' || m.peer.state === 'closed' ? h('button', { class: 'btn labeled small primary', onclick: () => invite(m) }, t('חיבור מחדש')) : null,

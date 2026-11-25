@@ -4,6 +4,7 @@ import * as store from './store.js';
 import * as db from './db.js';
 import { confirmBox } from './ui.js';
 import { t, lang, setLang } from './i18n.js';
+import { PICKS, drawingOf, instrumentOf } from './instruments.js';
 
 export function openSettings() {
   const st = store.state.settings;
@@ -13,6 +14,23 @@ export function openSettings() {
     i.onchange = () => store.setSetting(k, i.value.trim());
     return i;
   };
+  // the main instrument: typed, or picked from the icons (which also fills the default part's words,
+  // unless the player wrote their own)
+  const instInput = input('instrument');
+  const wordsInput = input('partWords', { dir: 'ltr' });
+  const autoWords = () => (PICKS.find(p => p[1] === st.instrument) || [])[2] || '';
+  const picksOn = () => instPicks.querySelectorAll('.inst-pick').forEach(b => b.classList.toggle('on', b.dataset.k === instrumentOf(instInput.value)));
+  const instPicks = h('div', { class: 'inst-picks' }, ...PICKS.map(([k, he, words]) => h('button', {
+    class: 'inst-pick', 'data-k': k, title: t(he), 'aria-label': t(he),
+    onclick: () => {
+      const wasAuto = !st.partWords || st.partWords === autoWords();
+      instInput.value = t(he); store.setSetting('instrument', he);
+      if (wasAuto) { wordsInput.value = words; store.setSetting('partWords', words); }
+      picksOn();
+    },
+  }, h('span', { class: 'ic', html: drawingOf(k) }), h('span', {}, t(he)))));
+  instInput.addEventListener('input', picksOn);
+  picksOn();
   const keyNames = k => k.map(x => x === ' ' ? t('רווח') : x).join(', ');
   const nextLbl = h('span', { class: 'mono' }, keyNames(st.keysNext));
   const prevLbl = h('span', { class: 'mono' }, keyNames(st.keysPrev));
@@ -54,8 +72,9 @@ export function openSettings() {
       segmented([{ value: 'en', label: 'English' }, { value: 'he', label: 'עברית' }], lang(), v => setLang(v))),
 
     h('h3', {}, t('פרופיל')),
-    h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', {}, t('שם')), input('profileName')), h('label', { class: 'field' }, h('span', {}, t('כלי ראשי')), input('instrument'))),
-    h('label', { class: 'field' }, h('span', {}, t('פרט ברירת מחדל: מילים בשם הפרט, מופרדות בפסיק')), input('partWords', { dir: 'ltr' })),
+    h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', {}, t('שם')), input('profileName')), h('label', { class: 'field' }, h('span', {}, t('כלי ראשי')), instInput)),
+    instPicks,
+    h('label', { class: 'field' }, h('span', {}, t('פרט ברירת מחדל: מילים בשם הפרט, מופרדות בפסיק')), wordsInput),
     h('p', { class: 'hint' }, t('שיר עם פרטים ייפתח בפרט הראשון שמתאים למילים האלה (למשל Piano לקלידן).')),
 
     h('h3', {}, t('דפדוף ופדל')),

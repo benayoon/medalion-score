@@ -11,6 +11,7 @@ import { audioCtx } from './metronome.js';
 import { fmtDur } from './duration.js';
 import { band, openBand, bandLabel, shareSong } from './band.js';
 import { t } from './i18n.js';
+import { withInst } from './instruments.js';
 
 const ui = { q: '', tag: '', filter: 'all', key: '', tempoMin: '', tempoMax: '' };
 let root = null;
@@ -195,7 +196,7 @@ function scoreMenu(s) {
       s.version.pages ? t('{n} עמ׳', { n: s.version.pages }) : '',
       s.version.parts.length ? t('{n} פרטים', { n: s.version.parts.length }) : '',
       s.hasXml ? 'MusicXML' : t('בלי MusicXML'), fmtDate(s.updated)].filter(Boolean).join(' · '))),
-    s.instruments && s.instruments.length ? h('div', { class: 'li static' }, icon('parts'), h('span', { class: 'muted', dir: 'auto' }, s.instruments.join(' · '))) : null,
+    s.instruments && s.instruments.length ? h('div', { class: 'li static inst-chips' }, ...s.instruments.map(n => h('span', { class: 'inst-chip' }, withInst(n)))) : null,
     h('button', {
       class: 'li danger', onclick: async () => {
         sh.close();

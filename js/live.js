@@ -11,6 +11,7 @@ import { audioCtx, countIn } from './metronome.js';
 import { readZip, writeZip } from './zip.js';
 import { transposeMscx } from './mstranspose.js';
 import { xmlToMsFiles, drawMscz, partFiles, fixFonts, fontsOnHand, withScore, patchMscz } from './engrave.js';
+import { withInst } from './instruments.js';
 
 let tkP = null;
 function toolkit() {
@@ -41,7 +42,16 @@ export class LiveEngine {
     this.v = v; this.mpos = null; this.page = 0; this.pages = []; this.xml = ''; this.parts = [];
     this.concert = false; this.player = null; this.src = new Map(); this.drawn = new Map(); this.boxes = [];
   }
-  get scroll() { return store.state.settings.liveScroll; }
+  get scroll() { return store.state.settings.liveScroll || !!this.phone(); }
+  // a phone: a whole page is far too small there. MuseScore lays the song out again on paper as narrow as
+  // the screen (the staff half as big again, fewer measures in a line), read in one long scroll.
+  // → the paper's width in inches, or 0 on a bigger screen (or when turned off in the display settings)
+  phone() {
+    if (store.state.settings.livePhone === false) return 0;
+    const w = window.innerWidth, hh = window.innerHeight;
+    if (Math.min(w, hh) >= 600) return 0;
+    return Math.max(4.6, Math.min(8.27, Math.round(w / 20) * 20 / 560 * 8.27));
+  }
 
   async open() {
     this.v.stage.replaceChildren(h('div', { class: 'busy' }, h('div', { class: 'spinner' }), t('MuseScore מעבד את התווים…')));
@@ -168,7 +178,7 @@ export class LiveEngine {
   renderKey() {
     const st = store.state.settings;
     // (while editing: the file's own key, written pitch, each edit a new drawing)
-    return JSON.stringify([this.edit ? 0 : this.v.semis, this.edit ? 'edit' : this.concert, this.selectedParts(), st.liveLyrics, st.liveAllMeasureNumbers, st.liveBigChords, this.edit ? this.edit.rev : null]);
+    return JSON.stringify([this.edit ? 0 : this.v.semis, this.edit ? 'edit' : this.concert, this.selectedParts(), st.liveLyrics, st.liveAllMeasureNumbers, st.liveBigChords, this.edit ? this.edit.rev : null, this.phone()]);
   }
 
   async draw() {
@@ -182,6 +192,7 @@ export class LiveEngine {
       : [{ name: 'score_style.mss', text: '<?xml version="1.0" encoding="UTF-8"?>\n<museScore version="4.70">\n  <Style>\n    </Style>\n  </museScore>\n' }, ...files];
     const have = await fontsOnHand();
     const edit = this.edit;
+    const ph = this.phone();
     const make = fit => {
       const out = all.map(f => {
         let t = fixFonts(f.text, have);
@@ -190,6 +201,7 @@ export class LiveEngine {
           if (this.concert && !edit) t = t.replace(/\s*<actualKey>-?\d+<\/actualKey>/g, '');
           if (this.v.semis && !edit) t = transposeMscx(t, this.v.semis);
           t = fixSlashes(t);
+          if (ph) t = t.replace(/<LayoutBreak>(?:(?!<\/LayoutBreak>)[\s\S])*?<subtype>(?:line|page)<\/subtype>[\s\S]*?<\/LayoutBreak>\s*/g, '');
           if (!st.liveLyrics) t = t.replace(/<Lyrics>[\s\S]*?<\/Lyrics>\s*/g, '');
           if (f.fromXml) t = setMsTitle(t, s.title, s.composer);
         } else {
@@ -201,7 +213,7 @@ export class LiveEngine {
           if (files.some(f => f.fromXml) && sel && sel.length === 1) t = setStyle(t, 'hideInstrumentNameIfOneInstrument', 1);
           if (fit.density) t = setStyle(t, 'spacingDensity', fit.density);
           if (fit.spatium) t = setStyle(t, 'spatium', fit.spatium);
-          if (files.paper) t = setPaper(t, files.paper);
+          if (ph) t = phonePaper(t, ph); else if (files.paper) t = setPaper(t, files.paper);
           if (st.liveAllMeasureNumbers) { t = setStyle(t, 'measureNumberInterval', 1); t = setStyle(t, 'measureNumberSystem', 0); t = setStyle(t, 'showMeasureNumberOne', 1); }
           if (st.liveBigChords) { t = setStyle(t, 'chordSymbolAFontSize', 15); t = setStyle(t, 'chordSymbolBFontSize', 15); }
         }
@@ -219,10 +231,11 @@ export class LiveEngine {
     const steps = [{}, { density: 1.3 }, { density: 1.7 }, { density: 2.2 }, { density: 3 }];
     const sp = +((all.find(f => /\.mss$/i.test(f.name)).text.match(/<spatium>([\d.]+)</) || [])[1] || 1.75);
     for (const k of [0.95, 0.9, 0.86, 0.82, 0.78]) steps.push({ density: 3, spatium: Math.round(sp * k * 1000) / 1000 });
-    let i = files.breaks ? (this.fits.get(sk) || 0) : 0;
+    const keep = files.breaks && !ph;   // (on a phone the lines are MuseScore's own, for the narrow paper)
+    let i = keep ? (this.fits.get(sk) || 0) : 0;
     const nm = edit ? edit.measures() : this.nMeasures;
     let r = await drawMscz(make(steps[i]), nm, { segments: !!edit });
-    if (files.breaks) {
+    if (keep) {
       const want = new Set([0, ...files.breaks.keys()]);
       const extra = x => (files.pages && x.svgs.length > files.pages)
         || x.boxes.some((b, j, a) => j && (b.y !== a[j - 1].y || b.page !== a[j - 1].page) && b.m !== a[j - 1].m && !want.has(b.m));
@@ -395,7 +408,9 @@ export class LiveEngine {
     const rer = () => this.layout();
     return [
       h('p', { class: 'hint' }, t('מצב חי מצויר על ידי MuseScore עצמו, בדיוק כמו בתוכנה: גופנים, מרווחים, שורות ועמודים. המסך רק מקטין או מגדיל את העמוד כולו.')),
-      toggle(t('גלילה רציפה במקום עמודים'), st.liveScroll, v => { store.setSetting('liveScroll', v); rer(); }),
+      this.phone() || st.livePhone === false && Math.min(window.innerWidth, window.innerHeight) < 600
+        ? toggle(t('פריסה לטלפון: תווים גדולים בשורות קצרות'), st.livePhone !== false, v => { store.setSetting('livePhone', v); rer(); })
+        : toggle(t('גלילה רציפה במקום עמודים'), st.liveScroll, v => { store.setSetting('liveScroll', v); rer(); }),
       toggle(t('אקורדים מוגדלים'), st.liveBigChords, v => { store.setSetting('liveBigChords', v); rer(); }),
       toggle(t('הצגת מילים'), st.liveLyrics, v => { store.setSetting('liveLyrics', v); rer(); }),
       toggle(t('מספר בכל תיבה'), st.liveAllMeasureNumbers, v => { store.setSetting('liveAllMeasureNumbers', v); rer(); }),
@@ -408,7 +423,7 @@ export class LiveEngine {
     const boxes = this.parts.map(p => {
       const cb = h('input', { type: 'checkbox', class: 'switch' }); cb.checked = chosen.has(p.name);
       cb.onchange = () => { cb.checked ? chosen.add(p.name) : chosen.delete(p.name); };
-      return h('label', { class: 'field toggle' }, h('span', { dir: 'auto' }, p.name), cb);
+      return h('label', { class: 'field toggle' }, withInst(p.name), cb);
     });
     return h('div', { class: 'combo' }, h('h4', {}, t('צירוף שורות (למשל קלידים + בס)')), ...boxes,
       h('button', { class: 'btn labeled primary', onclick: () => { close(); this.v.partName = [...chosen].join(' + '); this.v.setMode('live'); } }, t('הצגת הצירוף')));
@@ -635,6 +650,14 @@ async function pdfPaper(key) {
   } catch { /* no PDF: MuseScore's paper from the MusicXML */ }
   papers.set(key, r);
   return r;
+}
+// paper for a phone: w inches wide with thin margins, and long (it is read in a scroll)
+function phonePaper(t, w) {
+  const m = 0.14;
+  for (const n of ['pageOddLeftMargin', 'pageEvenLeftMargin']) t = setStyle(t, n, m);
+  for (const n of ['pageOddTopMargin', 'pageEvenTopMargin', 'pageOddBottomMargin', 'pageEvenBottomMargin']) t = setStyle(t, n, 0.2);
+  t = setStyle(t, 'pageWidth', w.toFixed(4)); t = setStyle(t, 'pageHeight', (w * 2.4).toFixed(4));
+  return setStyle(t, 'pagePrintableWidth', (w - 2 * m).toFixed(4));
 }
 // a paper size in a .mss text, keeping its margins
 function setPaper(t, { w, h }) {

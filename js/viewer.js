@@ -23,6 +23,7 @@ function setStart(id, reset = false) {
   return all[id];
 }
 import { report as bandReport, band, openBand, bandLabel, onBand } from './band.js';
+import { instIcon, withInst } from './instruments.js';
 
 let current = null;
 export const currentViewer = () => current;
@@ -141,7 +142,9 @@ class Viewer {
     // from the .mscz when the song has one), else live mode (Verovio)
     let exact = !this.semis || store.pdfKeys(s).includes(this.semis);
     if (!exact && canEngrave(s)) exact = await this.engrave(this.semis);
-    const want = !s.hasPdf || (!exact && s.hasXml) ? 'live' : 'page';
+    // a phone: a whole PDF page is too small to read there, so the song opens in live mode (laid out for the phone)
+    const phone = s.hasXml && store.state.settings.livePhone !== false && Math.min(window.innerWidth, window.innerHeight) < 600;
+    const want = !s.hasPdf || (!exact && s.hasXml) || phone ? 'live' : 'page';
     await this.setMode(want, { atEnd });
   }
 
@@ -230,7 +233,7 @@ class Viewer {
       if (e.target.closest('button, a, input, select')) return;
       const dx = e.clientX - sx; const dy = e.clientY - sy; const dt = Date.now() - st;
       const editing = this.annot && this.annot.editing;
-      const scrollMode = this.mode === 'live' && store.state.settings.liveScroll;
+      const scrollMode = this.mode === 'live' && this.engine && this.engine.scroll;
       if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5 && dt < 600) {
         // swipe: finger moving left reveals the next page (like a book)
         this.swipedAt = Date.now();
@@ -286,7 +289,7 @@ class Viewer {
         segmented([{ value: 'page', label: t('דף') }, { value: 'live', label: t('חי') }], this.mode, m => this.setMode(m)),
         h('button', { class: 'vt-text', onclick: () => this.keySheet(), title: t('טון') },
           h('span', {}, keyLabel || t('טון')), this.semis ? h('small', {}, semisLabel(this.semis)) : null),
-        parts.length || this.mode === 'live' ? h('button', { class: 'vt-text', onclick: () => this.partSheet(), title: t('פרט') }, h('span', { dir: 'auto' }, this.partName || t('פרטיטורה'))) : null,
+        parts.length || this.mode === 'live' ? h('button', { class: 'vt-text vt-part', onclick: () => this.partSheet(), title: t('פרט') }, ...(this.partName || '').split(' + ').map(n => instIcon(n, { score: true })), h('span', { dir: 'auto' }, this.partName || t('פרטיטורה'))) : null,
         this.mode === 'page' ? btn('pen', t('עיפרון'), () => this.startPencil(), 'ghost') : null,
         this.mode === 'live' ? btn('play', t('ניגון'), () => this.engine.playSheet && this.engine.playSheet(), 'ghost') : null,
         // a running metronome stays in reach so it can be stopped
@@ -397,8 +400,8 @@ class Viewer {
     const parts = this.mode === 'live' ? (this.engine.partList ? this.engine.partList() : []) : s.version.parts.map(p => p.name);
     const cur = this.partName;
     const list = h('div', { class: 'list' },
-      h('button', { class: 'li' + (!cur ? ' on' : ''), onclick: () => pick('') }, t('פרטיטורה מלאה')),
-      ...parts.map(n => h('button', { class: 'li' + (n === cur ? ' on' : ''), dir: 'auto', onclick: () => pick(n) }, n)));
+      h('button', { class: 'li' + (!cur ? ' on' : ''), onclick: () => pick('') }, withInst('', t('פרטיטורה מלאה'), { score: true })),
+      ...parts.map(n => h('button', { class: 'li' + (n === cur ? ' on' : ''), dir: 'auto', onclick: () => pick(n) }, withInst(n))));
     const extra = this.mode === 'live' && this.engine.comboPicker ? this.engine.comboPicker(() => sh.close()) : null;
     const sh = sheet(t('פרט'), h('div', {}, list, extra,
       h('p', { class: 'hint' }, t('פרט ברירת המחדל נבחר לפי הכלי שלך בהגדרות.'))));

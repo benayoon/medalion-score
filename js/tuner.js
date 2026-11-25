@@ -11,13 +11,14 @@ export const TRANSPOSE = [
 ];
 
 // YIN on a mono buffer → { freq, clarity } or null for silence / no clear pitch
-export function detectPitch(input, sampleRate, minF = 30, maxF = 2200) {
+// (minRms: quieter than this is silence; a microphone without automatic gain can be very quiet)
+export function detectPitch(input, sampleRate, minF = 30, maxF = 2200, minRms = 0.008) {
   const buf = input, sr = sampleRate;
   const n = buf.length;
   let rms = 0;
   for (let i = 0; i < n; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / n);
-  if (rms < 0.008) return null;
+  if (rms < minRms) return null;
   const maxTau = Math.min(Math.floor(sr / minF), n >> 1);
   const minTau = Math.max(2, Math.floor(sr / maxF));
   const w = n - maxTau;
@@ -75,6 +76,18 @@ export function heardNote(s, midi, now, hold = 80, gap = 90) {
   if (midi !== s.cand) { s.cand = midi; s.since = now; }
   if (now - s.since >= hold && midi !== s.held) { s.held = midi; return midi; }
   return null;
+}
+
+// singing notes in: only the note's name is trusted (a voice is heard an octave off easily, and people sing
+// where it is comfortable). pitch: any octave of the note; ref: the note before it (null: none); mid: the
+// middle of the staff. The octave next to the note before, else the one nearest the middle of the staff;
+// a tritone (as far up as down) goes toward the middle.
+export function nearOctave(pitch, ref, mid) {
+  const to = ref == null ? mid : ref;
+  const lo = pitch + 12 * Math.floor((to - pitch) / 12);
+  const hi = lo + 12;
+  if (to - lo !== hi - to) return to - lo < hi - to ? lo : hi;
+  return Math.abs(lo - mid) <= Math.abs(hi - mid) ? lo : hi;
 }
 
 export function openTuner() {

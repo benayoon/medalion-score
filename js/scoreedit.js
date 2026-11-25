@@ -10,6 +10,7 @@ import { guessChords, notesIn } from './chordguess.js';
 import { saveEdited } from './importer.js';
 import { nameKey } from './live.js';
 import { audioCtx } from './metronome.js';
+import { nearOctave } from './tuner.js';
 import { t } from './i18n.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -156,7 +157,7 @@ export class ScoreEditor {
       if (i < 0) return;
     }
     const a = { staff: pl.staff, m: pl.m, voice: this.voice, i, n: 0 };
-    if (this.input && !info.drums) {
+    if (this.input && !info.drums && !this.mic) {   // (while singing notes in, a tap only moves the cursor)
       // note input: the note goes where the finger is (an accidental in the measure before holds)
       const ev = this.doc.events(a.staff, a.m, a.voice).events[i];
       if (this.chord && ev && !ev.rest) return this.act(() => { this.doc.addNote(a, pl.pitch, pl.tpc); this.sel = { ...a, n: this.noteIndex(a, pl.pitch) }; this.audition([pl.pitch]); });
@@ -463,57 +464,132 @@ export class ScoreEditor {
     } catch { /* no audio */ }
   }
 
-  // ---------------------------------------------------------------- playing notes in (microphone)
-  // note input by ear: play or sing a note, it is written with the length chosen, then the next one
+  // ---------------------------------------------------------------- singing notes in (microphone, beta)
+  // note input by voice: sing (or play) a note, it is written with the length chosen, then the next one.
+  // Only the note's name is taken from the sound; its octave is the one next to the note before.
   async toggleMic(given = null) {   // given: another sound source (a MediaStream), for tests
     if (this.mic) return this.stopMic();
+    // inside the tap, before any await: Safari lets the sound start only then
+    const c = audioCtx(); c.resume().catch(() => {});
     if (!this.input) this.setInput(true);
     let stream = given;
     if (!stream) {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast(t('אין גישה למיקרופון בכתובת הזו (צריך HTTPS).'));
-      try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); }
-      catch (e) { return toast(t('המיקרופון לא נפתח: {msg}', { msg: e.message }), 4000); }
+      // iPad / iPhone: sound in and out together (else the microphone may come silent)
+      try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch { /* older Safari */ }
+      // the device's own gain stays on: without it the iPad's microphone is very quiet
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } }); }
+      catch (e) { try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch { /* same */ } return toast(t('המיקרופון לא נפתח: {msg}', { msg: e.message }), 4000); }
     }
+    if (this.mic) { stream.getTracks().forEach(x => x.stop()); return; }
     const { detectPitch, noteOf, heardNote } = await import('./tuner.js');
-    const c = audioCtx(); if (c.state !== 'running') await c.resume().catch(() => {});
+    if (c.state !== 'running') await c.resume().catch(() => {});
     const src = c.createMediaStreamSource(stream);
     const an = c.createAnalyser(); an.fftSize = 2048;
+    // through a silent output, so the browser keeps pulling the microphone
     const mute = c.createGain(); mute.gain.value = 0;
     src.connect(an); an.connect(mute).connect(c.destination);
     const buf = new Float32Array(an.fftSize);
-    const mic = this.mic = { stream, src, an, timer: 0, heard: {} };
+    const mic = this.mic = { stream, src, an, mute, ctx: c, timer: 0, heard: {}, paused: false, t0: performance.now(), peak: 0, loud: 0, mins: [], slot: -1 };
     this.muted = true;   // the editor's own sound would be heard back
     const a4 = store.state.settings.a4 || 440;
     const tick = () => {
       if (this.mic !== mic) return;
+      const now = performance.now();
       an.getFloatTimeDomainData(buf);
-      const r = detectPitch(buf, c.sampleRate, 50, 1500);
-      const midi = r && r.clarity > 0.85 ? noteOf(r.freq, a4).midi : null;
-      const got = heardNote(mic.heard, midi, performance.now());
-      if (got != null) {
-        const a = this.here();
-        if (a) { const ev = this.doc.events(a.staff, a.m, a.voice); this.enterAt(a, [[got, pitchToTpc(got, ev.key)]]); }
-      }
-      this.micLevel(r ? Math.min(1, r.rms * 12) : 0, midi);
-      mic.timer = setTimeout(tick, 35);
+      let sum = 0; for (let k = 0; k < buf.length; k++) sum += buf[k] * buf[k];
+      const rms = Math.sqrt(sum / buf.length);
+      mic.peak = Math.max(mic.peak, rms);
+      // a voice: 60–1200 Hz. What counts as sound goes by how loud this singer is on this microphone (a quiet
+      // iPad microphone still counts; the room's hum and the tail of a note, far under the voice, do not)
+      // (the room: the quietest half second of the last four; a steady hum there is not a note)
+      const warm = now - mic.t0 < 500;   // the first half second only measures the room
+      const slot = Math.floor(now / 500);
+      if (now - mic.t0 < 150) { /* the buffer is still filling */ }
+      else if (mic.slot !== slot) { mic.slot = slot; mic.mins.push(rms); if (mic.mins.length > 8) mic.mins.shift(); }
+      else mic.mins[mic.mins.length - 1] = Math.min(mic.mins[mic.mins.length - 1], rms);
+      mic.loud = Math.max(mic.loud * 0.997, rms);
+      const r = detectPitch(buf, c.sampleRate, 60, 1200, Math.max(0.0012, mic.loud * 0.08, (mic.mins.length ? Math.min(...mic.mins) : 0) * 2.2));
+      const midi = r && !warm && r.clarity > 0.8 ? noteOf(r.freq, a4).midi : null;
+      const pc = midi == null ? null : ((midi % 12) + 12) % 12;
+      const got = heardNote(mic.heard, mic.paused ? null : pc, now, 100, 45);
+      if (got != null) this.heardPitch(got);
+      this.micLevel(rms, pc);
+      mic.timer = setTimeout(tick, 25);
     };
-    tick();
     this.renderPal();
-    toast(t('מנגנים או שרים צליל אחרי צליל: כל צליל נכתב באורך שנבחר'), 4000);
+    tick();
   }
   stopMic() {
     const mic = this.mic; if (!mic) return;
     this.mic = null; this.muted = false;
     clearTimeout(mic.timer);
-    try { mic.src.disconnect(); mic.an.disconnect(); } catch { /* gone */ }
+    try { mic.src.disconnect(); mic.an.disconnect(); mic.mute.disconnect(); } catch { /* gone */ }
     mic.stream.getTracks().forEach(x => x.stop());
+    try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch { /* older Safari */ }
     this.renderPal();
     this.paint();
   }
-  micLevel(level, midi) {
-    const el = this.dock && this.dock.querySelector('.ne-mic'); if (!el) return;
-    el.style.setProperty('--lvl', String(level));
-    el.dataset.note = midi != null ? noteName(midi, pitchToTpc(midi, 0)) : '';
+  pauseMic() { if (!this.mic) return; this.mic.paused = !this.mic.paused; this.mic.ctx.resume().catch(() => {}); this.renderPal(); }
+  // a note sung (0–11, concert): written next to the note before it; with no note before, mid-staff
+  heardPitch(pc) {
+    const a = this.here(); if (!a) return;
+    if (this.staffInfo(a.staff).drums) return;
+    const d = this.doc; const ev = d.events(a.staff, a.m, a.voice);
+    const w = toWritten(d, a.staff, 60 + pc, pitchToTpc(60 + pc, ev.key));
+    let ref = null; let p = a;
+    for (let k = 0; k < 400 && ref == null; k++) {
+      p = d.prevOf(p); if (!p) break;
+      const e = p.ev.events[p.i];
+      if (e && !e.rest && !e.slash && e.notes.length) ref = toWritten(d, a.staff, e.notes[0].pitch, e.notes[0].tpc).pitch;
+    }
+    const wp = nearOctave(w.pitch, ref, this.staffMiddle(a));
+    const cn = toConcert(d, a.staff, wp, w.tpc);
+    this.enterAt(a, [[cn.pitch, cn.tpc]]);
+  }
+  // the note before the cursor is taken back (it becomes a rest), and the cursor stands there again
+  back() {
+    const a = this.here(); if (!a) return;
+    const p = this.doc.prevOf(a); if (!p) return;
+    const b = { staff: a.staff, m: p.m, voice: a.voice, i: p.i, n: 0 };
+    const e = this.event(b);
+    if (e && !e.rest && !this.act(() => this.doc.toRest(b), { keepSel: true })) return;
+    this.sel = b; this.last = null; this.fixSel(); this.follow = true; this.paint();
+  }
+  micLevel(rms, pc) {
+    const mic = this.mic; const el = this.palEl && this.palEl.querySelector('.nv-head'); if (!mic || !el) return;
+    // −70 dB … −20 dB across the meter
+    const lvl = rms > 0 ? Math.max(0, Math.min(1, (20 * Math.log10(rms) + 70) / 50)) : 0;
+    el.querySelector('.nv-meter i').style.width = Math.round(lvl * 100) + '%';
+    el.querySelector('.nv-note').textContent = pc != null && !mic.paused ? noteName(60 + pc, pitchToTpc(60 + pc, 0)) : '';
+    const msg = mic.ctx.state !== 'running' ? t('נוגעים במסך כדי להפעיל את המיקרופון')
+      : mic.peak < 1e-5 && performance.now() - mic.t0 > 2500 ? t('המיקרופון לא שולח צליל. בודקים שלאתר יש הרשאה למיקרופון בהגדרות המכשיר')
+        : mic.paused ? t('מושהה: לא נכתב כלום') : t('שרים צליל אחרי צליל. כל צליל נכתב באורך שנבחר');
+    const m = el.querySelector('.nv-msg'); if (m.textContent !== msg) m.textContent = msg;
+  }
+  // the palette while singing notes in: lengths, and a few big buttons
+  renderVoice() {
+    const mic = this.mic;
+    const big = (ico, text, label, onclick, cls = '') => h('button', { class: 'btn nv-b ' + cls, title: label, 'aria-label': label, onclick },
+      ico ? h('span', { class: 'nv-ic', html: ico }) : null, h('small', {}, text));
+    const sym = s => `<span class="nv-sym" dir="ltr">${s}</span>`;
+    const head = h('div', { class: 'nv-head' },
+      h('strong', {}, t('הזנת תווים בקול')), h('span', { class: 'nv-beta' }, t('בטא')),
+      h('div', { class: 'nv-meter', role: 'img', 'aria-label': t('עוצמת המיקרופון') }, h('i')),
+      h('b', { class: 'nv-note', dir: 'ltr' }, ''),
+      h('span', { class: 'nv-msg muted' }, ''));
+    const lens = h('div', { class: 'nv-grid nv-lens', dir: 'ltr' },
+      ...DURS.map(([ty]) => big(durSvg(ty), DUR_NAME[ty], DUR_NAME[ty], () => this.duration(ty), this.dur === ty ? 'on' : '')),
+      big(ICO.dot, t('נקודה'), t('נקודה (.)'), () => this.toggleDot(), this.dots ? 'on' : ''));
+    const acts = h('div', { class: 'nv-grid nv-acts' },
+      big(ICO.rest, t('שתיקה'), t('שתיקה (0)'), () => this.rest()),
+      big(sym('⌫'), t('מחיקה'), t('מחיקת התו האחרון'), () => this.back(), 'danger'),
+      big(sym('8▲'), t('אוקטבה למעלה'), t('התו האחרון אוקטבה למעלה'), () => this.move('octUp')),
+      big(sym('8▼'), t('אוקטבה למטה'), t('התו האחרון אוקטבה למטה'), () => this.move('octDown')),
+      big(sym(mic.paused ? '▶' : '❚❚'), mic.paused ? t('המשך') : t('השהיה'), mic.paused ? t('המיקרופון ממשיך לכתוב') : t('המיקרופון מפסיק לכתוב עד שממשיכים'), () => this.pauseMic(), mic.paused ? 'on' : ''),
+      big(sym('✓'), t('סיום'), t('סיום ההזנה בקול'), () => this.stopMic(), 'primary'));
+    this.palEl.replaceChildren(head, lens, acts);
+    this.palEl.onpointerdown = () => { if (this.mic && this.mic.ctx.state !== 'running') this.mic.ctx.resume().catch(() => {}); };
   }
 
   // ---------------------------------------------------------------- the dock: bar + palette
@@ -558,11 +634,14 @@ export class ScoreEditor {
   }
   renderPal() {
     if (!this.palEl) return;
+    this.dock.classList.toggle('voice', !!this.mic);
+    if (this.mic) return this.renderVoice();
     const e = !this.input && this.sel ? this.event() : null;
     const curDur = e ? e.type : this.dur; const curDots = e ? e.dots : this.dots;
     const sep = () => h('span', { class: 'ne-sep' });
     const row1 = h('div', { class: 'ne-row', dir: 'ltr' },
       ib(ICO.input, t('הזנת תווים (N)'), () => this.setInput(!this.input), 'ne-input' + (this.input ? ' on' : '')),
+      h('button', { class: 'btn ne-b ne-mic', title: t('הזנת תווים בקול (בטא): שרים, והמיקרופון כותב'), 'aria-label': t('הזנת תווים בקול (בטא): שרים, והמיקרופון כותב'), onclick: () => this.toggleMic() }, h('span', { html: ICO.mic }), h('small', {}, t('בטא'))),
       sep(),
       ...DURS.map(([ty, k]) => ib(durSvg(ty), `${DUR_NAME[ty]} (${k})`, () => this.duration(ty), curDur === ty ? 'on' : '')),
       ib(ICO.dot, t('נקודה (.)'), () => this.toggleDot(), curDots ? 'on' : ''),
@@ -589,8 +668,7 @@ export class ScoreEditor {
       ...ARTICS.map(([sub, s, nm]) => tb(s, nm, () => this.artic(sub))),
       tb('𝄐', t('פרמטה'), () => this.fermata()),
       sep(),
-      tb(t('תיבה'), t('תיבה: הוספה, מחיקה, סולם, חזרות, העתקה'), () => this.measureSheet(), 'ne-w'),
-      ib(ICO.mic, t('כתיבה בנגינה: המיקרופון שומע וכותב'), () => this.toggleMic(), 'ne-mic' + (this.mic ? ' on' : '')));
+      tb(t('תיבה'), t('תיבה: הוספה, מחיקה, סולם, חזרות, העתקה'), () => this.measureSheet(), 'ne-w'));
     this.palEl.replaceChildren(row1, row2);
   }
 
