@@ -10,6 +10,7 @@ import { verovioInterval } from './music.js';
 import { audioCtx, countIn } from './metronome.js';
 import { readZip, writeZip } from './zip.js';
 import { transposeMscx } from './mstranspose.js';
+import { concertInfo, readShift, myReadKey } from './concert.js';
 import { xmlToMsFiles, drawMscz, partFiles, fixFonts, fontsOnHand, withScore, patchMscz } from './engrave.js';
 import { withInst } from './instruments.js';
 
@@ -58,6 +59,9 @@ export class LiveEngine {
     this.xml = await this.loadXml();
     this.parts = readParts(this.xml);
     this.nMeasures = countMeasures(this.xml);
+    // which parts are for an instrument in C (their notes are concert pitch)
+    const info = concertInfo(this.xml);
+    this.transposing = new Set(info.parts.map(p => p.id));
     this.concert = !!this.v.meta.concert;
     await this.render();
   }
@@ -66,6 +70,15 @@ export class LiveEngine {
     return store.loadXml(s);
   }
   partList() { return this.parts.map(p => p.name); }
+  // a player on a transposing instrument (Settings: "my instrument reads in") sees a part written for an
+  // instrument in C in their own key. Not the full score of a band with transposing parts, not a transposing
+  // instrument's own part, not in concert pitch, not while editing. → semitones (0: as written)
+  readKey() {
+    const k = myReadKey();
+    if (!k || this.concert || this.edit || !this.transposing) return 0;
+    const shown = this.selectedParts() || this.parts.map(p => p.id);
+    return shown.length && shown.every(id => !this.transposing.has(id)) ? k : 0;
+  }
   selectedParts() {
     const pn = this.v.partName;
     if (!pn) return null;
@@ -178,7 +191,7 @@ export class LiveEngine {
   renderKey() {
     const st = store.state.settings;
     // (while editing: the file's own key, written pitch, each edit a new drawing)
-    return JSON.stringify([this.edit ? 0 : this.v.semis, this.edit ? 'edit' : this.concert, this.selectedParts(), st.liveLyrics, st.liveAllMeasureNumbers, st.liveBigChords, this.edit ? this.edit.rev : null, this.phone()]);
+    return JSON.stringify([this.edit ? 0 : this.v.semis, this.edit ? 'edit' : this.concert, this.selectedParts(), st.liveLyrics, st.liveAllMeasureNumbers, st.liveBigChords, this.edit ? this.edit.rev : null, this.phone(), this.readKey()]);
   }
 
   async draw() {
@@ -199,7 +212,7 @@ export class LiveEngine {
         if (/\.mscx$/i.test(f.name)) {
           // MuseScore shows a key's written form (actualKey) whenever the file has one, also in concert pitch
           if (this.concert && !edit) t = t.replace(/\s*<actualKey>-?\d+<\/actualKey>/g, '');
-          if (this.v.semis && !edit) t = transposeMscx(t, this.v.semis);
+          if (!edit) { const sh = readShift(this.readKey(), this.v.semis); if (sh.semis || sh.oct) t = transposeMscx(t, sh.semis, sh.oct); }
           t = fixSlashes(t);
           if (ph) t = t.replace(/<LayoutBreak>(?:(?!<\/LayoutBreak>)[\s\S])*?<subtype>(?:line|page)<\/subtype>[\s\S]*?<\/LayoutBreak>\s*/g, '');
           if (!st.liveLyrics) t = t.replace(/<Lyrics>[\s\S]*?<\/Lyrics>\s*/g, '');
@@ -905,7 +918,9 @@ function shiftPitch(step, alter, octave, diat, chrom) {
 }
 function toWrittenPitch(d) {
   const parts = [...d.querySelectorAll('score-partwise > part')];
-  const firstFifths = p => { const f = p.querySelector('key > fifths'); return f ? +f.textContent : null; };
+  // concert pitch or written? (concert.js: what the file says, the keys, and the notes themselves)
+  const info = concertInfo(d);
+  const todo = new Set(info.concert ? info.parts.map(p => p.id) : []);
   // MusicXML 4 (MuseScore 4.6, concert-pitch score): the transposition as <for-part><part-transpose>.
   // It becomes a plain <transpose> once the notes are written pitch, which every reader understands
   for (const fp of d.querySelectorAll('attributes > for-part')) {
@@ -918,13 +933,10 @@ function toWrittenPitch(d) {
     fp.parentNode.removeChild(fp);
   }
   const trans = p => { const t = p.querySelector('attributes > transpose'); return t ? { chrom: +(t.querySelector('chromatic')?.textContent || 0), diat: +(t.querySelector('diatonic')?.textContent || 0), oct: +(t.querySelector('octave-change')?.textContent || 0) } : null; };
-  const refs = parts.filter(p => { const t = trans(p); return (!t || !t.chrom) && p.querySelector('pitch'); });
-  if (!refs.length) return false;
-  const concertFifths = firstFifths(refs[0]);
   let changed = false;
   for (const p of parts) {
     const t = trans(p);
-    if (!t || !t.chrom || firstFifths(p) !== concertFifths) continue; // already written pitch
+    if (!t || !t.chrom || !todo.has(p.getAttribute('id'))) continue; // already written pitch
     const chrom = -(t.chrom + 12 * t.oct); const diat = -(t.diat + 7 * t.oct);
     for (const pitch of p.querySelectorAll('pitch')) {
       const st = pitch.querySelector('step'); const al = pitch.querySelector('alter'); const oc = pitch.querySelector('octave');

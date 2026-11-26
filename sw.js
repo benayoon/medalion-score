@@ -1,7 +1,7 @@
 // Service worker: the whole app is cached so it opens on stage with no internet.
 // MuseScore (vendor/webmscore, ~22 MB) is cached the first time it is fetched (the app fetches it early).
 // Songs themselves live in IndexedDB, not here.
-const VERSION = 'v21';
+const VERSION = 'v22';
 const SHELL = 'ms-shell-' + VERSION;
 const VENDOR = 'ms-vendor-v2';
 
@@ -10,7 +10,7 @@ const SHELL_FILES = [
   'js/app.js', 'js/db.js', 'js/store.js', 'js/ui.js', 'js/i18n.js', 'js/i18n-en.js', 'js/music.js', 'js/library.js', 'js/viewer.js',
   'js/pdfdoc.js', 'js/annot.js', 'js/setlists.js', 'js/settings.js', 'js/metronome.js', 'js/live.js',
   'js/player.js', 'js/importer.js', 'js/layout.js', 'js/zip.js', 'js/engrave.js', 'js/mscz.js', 'js/mstranspose.js',
-  'js/net.js', 'js/qr.js', 'js/band.js', 'js/msedit.js', 'js/scoreedit.js', 'js/staffhit.js', 'js/chordguess.js', 'js/tuner.js', 'js/duration.js', 'js/instruments.js', 'js/newscore.js',
+  'js/net.js', 'js/qr.js', 'js/band.js', 'js/msedit.js', 'js/scoreedit.js', 'js/staffhit.js', 'js/chordguess.js', 'js/tuner.js', 'js/duration.js', 'js/instruments.js', 'js/newscore.js', 'js/relay.js', 'js/concert.js', 'js/prepare.js',
   'vendor/qrcode.js', 'vendor/jsQR.js',
 ];
 const VENDOR_FILES = ['vendor/pdf.min.mjs', 'vendor/pdf.worker.min.mjs', 'vendor/pdf-lib.min.js', 'vendor/verovio-toolkit-wasm.js'];

@@ -5,6 +5,7 @@ import * as db from './db.js';
 import { confirmBox } from './ui.js';
 import { t, lang, setLang } from './i18n.js';
 import { PICKS, drawingOf, instrumentOf } from './instruments.js';
+import { READ_KEYS, readKeyOf, myReadKey } from './concert.js';
 
 export function openSettings() {
   const st = store.state.settings;
@@ -26,11 +27,20 @@ export function openSettings() {
       const wasAuto = !st.partWords || st.partWords === autoWords();
       instInput.value = t(he); store.setSetting('instrument', he);
       if (wasAuto) { wordsInput.value = words; store.setSetting('partWords', words); }
+      setReadKey(readKeyOf(he === 'סקסופון' ? 'alto sax' : k));
       picksOn();
     },
   }, h('span', { class: 'ic', html: drawingOf(k) }), h('span', {}, t(he)))));
   instInput.addEventListener('input', picksOn);
+  // a typed instrument: its key too (tenor sax: B♭, horn: F)
+  instInput.addEventListener('change', () => setReadKey(readKeyOf(instInput.value)));
   picksOn();
+  // the key this player reads in: a part for an instrument in C (piano, voice, a lead sheet) is shown in it
+  const readKeyBox = h('div', { class: 'read-key' });
+  const setReadKey = v => { store.setSetting('readKey', v); drawReadKey(); };
+  const drawReadKey = () => readKeyBox.replaceChildren(
+    segmented(READ_KEYS.map(o => ({ value: String(o.value), label: h('bdi', { dir: 'ltr' }, o.label) })), String(myReadKey()), v => setReadKey(+v)));
+  drawReadKey();
   const keyNames = k => k.map(x => x === ' ' ? t('רווח') : x).join(', ');
   const nextLbl = h('span', { class: 'mono' }, keyNames(st.keysNext));
   const prevLbl = h('span', { class: 'mono' }, keyNames(st.keysPrev));
@@ -74,6 +84,8 @@ export function openSettings() {
     h('h3', {}, t('פרופיל')),
     h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', {}, t('שם')), input('profileName')), h('label', { class: 'field' }, h('span', {}, t('כלי ראשי')), instInput)),
     instPicks,
+    h('div', { class: 'field' }, h('span', {}, t('הכלי שלי קורא בטון')), readKeyBox,
+      h('p', { class: 'hint' }, t('בכלי מעתיק (B♭, E♭, F): תפקיד שנכתב לכלי בצליל קונצרט (פסנתר, שירה, לידשיט) מוצג לך במצב חי בטון שלך. תפקיד שכבר נכתב לכלי מעתיק נשאר כמו שהוא.'))),
     h('label', { class: 'field' }, h('span', {}, t('פרט ברירת מחדל: מילים בשם הפרט, מופרדות בפסיק')), wordsInput),
     h('p', { class: 'hint' }, t('שיר עם פרטים ייפתח בפרט הראשון שמתאים למילים האלה (למשל Piano לקלידן).')),
 

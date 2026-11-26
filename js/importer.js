@@ -16,6 +16,7 @@ import { readZip, unzipMusicXml } from './zip.js';
 import { layoutFromMusicXml, rehearsalMarks } from './layout.js';
 import { engraveMscz, fontsChanged, fontsSig } from './engrave.js';
 import { xmlSeconds } from './duration.js';
+import { concertInfo, concertSummary } from './concert.js';
 
 const KEEP_VERSIONS = 4;
 const ext = n => (n.split('.').pop() || '').toLowerCase();
@@ -209,6 +210,16 @@ async function storeSet(pre, g, { scoreBuf, partBufs }, xmlDoc, wantThumb) {
   return set;
 }
 
+// MuseScore keeps "Concert pitch" for the score and for every part on its own (a score shown in concert
+// pitch, its parts written, is common): each part's PDF is what its own MusicXML says. null: no part files
+function partsConcert(parts, partXml) {
+  const own = parts.map(p => [p.name, Object.entries(partXml || {}).find(([n]) => nameKey(n) === nameKey(p.name))]).filter(x => x[1]);
+  if (!own.length) return null;
+  const bad = [];
+  for (const [name, [, x]] of own) { const ci = concertInfo(x); if (ci.parts.length && ci.concert === true) bad.push(name); }
+  return { c: bad.length > 0, parts: bad, exact: true };
+}
+
 async function addMain(g) {
   const data = await readSet(g);
   if (g.sig) data.sig = g.sig;
@@ -231,6 +242,12 @@ async function addMain(g) {
     await db.setBlob(pre + 'score.musicxml', xmlText);
     version.xml = { key: pre + 'score.musicxml', zip: false };
     version.rehearsal = rehearsalMarks(xmlDoc);
+    // exported with "Concert pitch" on? Then the PDFs of the trumpet, the sax… show the piano's notes
+    try {
+      version.concert = partsConcert(set.parts, g.partXml) || concertSummary(concertInfo(xmlDoc));
+      const c = version.concert;
+      if (c.c === true && set.parts.length && c.parts.length) toast(t('שימו לב: הקובץ יוצא מ-MuseScore בצליל קונצרטי (Concert pitch). התפקידים של {parts} יוצגו במצב חי בכתב של הכלי. כדי לקבל PDF נכון: לכבות Concert pitch ב-MuseScore ולייצא שוב', { parts: c.parts.join(', ') }), 9000);
+    } catch (e) { console.warn('concert pitch check', e); }
   }
   // the MuseScore file itself: other keys are engraved from it
   if (g.mscz) {
@@ -378,11 +395,13 @@ export function engraveKey(scoreId, semis, { quiet = false } = {}) {
 
 // every key a song is played in (setlists, its own setting) that has no PDF yet, engraved in the background
 export async function prepareKeys(onlyId = null) {
+  if (store.state.performing) return;   // during a show the iPad does only what the show needs
   const { wantedKeys } = await import('./setlists.js');
   for (const w of wantedKeys({ missingOnly: true, withIds: true })) {
     if (onlyId && w.id !== onlyId) continue;
     if (!canEngrave(store.scoreById(w.id))) continue;
     for (const semis of w.keys) {
+      if (store.state.performing) return;
       try { await engraveKey(w.id, semis, { quiet: true }); }
       catch (e) { console.warn('key', w.title, semis, e); }
     }

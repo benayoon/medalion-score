@@ -85,6 +85,11 @@ export function fixFonts(t, have) {
     .replace(/<font face="([^"]*)"/g, (m, n) => `<font face="${sub(n)}"`);
 }
 // the .mscx / .mss texts inside a .mscz changed by fn(text, name); other files kept as they are
+// a .mscx / .mss text shown in written pitch (MuseScore keeps both pitches in the file; this is only the view)
+export const writtenPitch = x => x.replace(/<concertPitch>\s*1\s*<\/concertPitch>/g, '<concertPitch>0</concertPitch>');
+// was the file saved showing concert pitch?
+export const savedConcert = x => /<concertPitch>\s*1\s*<\/concertPitch>/.test(x);
+
 export async function patchMscz(bytes, fn) {
   const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const out = [];
@@ -181,7 +186,9 @@ export function engraveMscz(buf, semis = 0, { onStep } = {}) {
     if (restart) { restart = false; if (worker) stop(new Error('restart')); }
     await start();
     const have = await fontsOnHand();
-    const data = await patchMscz(await transposeMscz(buf, semis), x => fixFonts(x, have));
+    // the PDFs are what the players read: always written pitch, also when the file was saved with
+    // "Concert pitch" on (the B♭ trumpet's part in B♭, never the piano's notes). The file itself is not changed.
+    const data = await patchMscz(await transposeMscz(buf, semis), x => writtenPitch(fixFonts(x, have)));
     const entries = readZip(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
     const parts = await partFiles(entries);
     const total = 1 + parts.length;

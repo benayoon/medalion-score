@@ -556,6 +556,7 @@ svg.medit .mbox.on { fill: rgba(31, 95, 209, .16); stroke: #1f5fd1; stroke-width
 .vt-part { align-items: center; }
 .vt-part .ic.inst svg { width: 20px; height: 20px; }
 .vt-part .ic.inst + .ic.inst { margin-inline-start: -4px; }
+.vt-part .vt-readkey { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: var(--accent-soft, rgba(127,127,127,.18)); margin-inline-start: 4px; unicode-bidi: isolate; }
 .field.toggle .inst-label { flex: 1; }
 .inst-chips { flex-wrap: wrap; gap: 8px; padding-block: 10px; }
 .inst-chip { display: inline-flex; align-items: center; border: var(--hair, 1px solid var(--line)); border-radius: 999px; padding: 4px 12px 4px 8px; font-size: 14px; }
@@ -604,3 +605,10 @@ svg.medit .mbox.on { fill: rgba(31, 95, 209, .16); stroke: #1f5fd1; stroke-width
   .nv-msg { flex: 1 1 auto; }
   .ne-b { height: 36px; }
 }
+/* the band's join code, always on the leader's screen */
+.band-join { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.band-join canvas.qr { width: min(280px, 70vw); }
+.band-join .code-text { font-size: 11px; max-height: 3.4em; }
+.band-join .hint { text-align: center; }
+.li.prep-none, .li.prep-live { flex-direction: column; align-items: flex-start; gap: 2px; }
+.li.prep-none b { color: var(--danger); }

@@ -48,8 +48,9 @@ export function transposeKey(key, iv) {
   return t - 14;
 }
 
-export function transposeMscx(text, semis) {
-  if (!semis) return text;
+// oct: whole octaves more (only the notes move; for reading a part in another instrument's key)
+export function transposeMscx(text, semis, oct = 0) {
+  if (!semis && !oct) return text;
   const iv = interval(semis);
   const tp = v => transposeTpc(v, iv, false);
   // staves of drum parts keep their notes
@@ -71,7 +72,7 @@ export function transposeMscx(text, semis) {
     return chunk.replace(
       /<(concertKey|actualKey)>(-?\d+)<\/\1>|<pitch>(\d+)<\/pitch>(\s*)<tpc>(-?\d+)<\/tpc>(?:(\s*)<tpc2>(-?\d+)<\/tpc2>)?|<tpc>(-?\d+)<\/tpc>|<(root|base)>(-?\d+)<\/\9>|<pitch>(\d+)<\/pitch>/g,
       (all, kt, kv, p, sp, v, sp2, v2, lone, rt, rv, lp) => {
-        if (lp != null) return `<pitch>${+lp + semis}</pitch>`;
+        if (lp != null) return `<pitch>${+lp + semis + 12 * oct}</pitch>`;
         if (kt === 'concertKey') { concert = transposeKey(+kv, iv); return `<${kt}>${concert}</${kt}>`; }
         if (kt) {
           // written key of a transposing instrument: from the new concert key, at most 6 sharps or flats
@@ -81,7 +82,7 @@ export function transposeMscx(text, semis) {
         }
         if (rt) return `<${rt}>${tp(+rv)}</${rt}>`;
         if (lone != null) return `<tpc>${tp(+lone)}</tpc>`;
-        const pitch = +p + semis; const t1 = tp(+v);
+        const pitch = +p + semis + 12 * oct; const t1 = tp(+v);
         const out = `<pitch>${pitch}</pitch>${sp}<tpc>${t1}</tpc>`;
         if (v2 == null) return out;
         // written spelling of a transposing instrument follows the new concert note. Matches MuseScore on

@@ -22,10 +22,13 @@ function setStart(id, reset = false) {
   }
   return all[id];
 }
-import { report as bandReport, band, openBand, bandLabel, onBand } from './band.js';
+import { report as bandReport, band, openBand, bandLabel, onBand, setReady as bandReady } from './band.js';
 import { instIcon, withInst } from './instruments.js';
+import { readKeyLabel } from './concert.js';
+import { liveReason, isPhone, partFor, showSongs, prepareShow } from './prepare.js';
 
 let current = null;
+let shown = null;   // the show made ready last ({ key, rep }): not again for the next song
 export const currentViewer = () => current;
 
 export async function openViewer(opts) {
@@ -63,15 +66,8 @@ class Viewer {
     // while the notes are edited the part on screen stays (a first save gives the song parts of its own,
     // and the default part would step in under the editor)
     if (this.pinPart != null) return this.pinPart;
-    const it = this.item;
-    if (it && it.part != null) return it.part;
-    if (this.meta.part != null) return this.meta.part;
     const s = this.score;
-    if (s && s.version.parts.length) {
-      const i = matchPart(s.version.parts, store.state.settings.partWords);
-      return i >= 0 ? s.version.parts[i].name : '';
-    }
-    return '';
+    return s ? partFor(s, this.item) : '';
   }
   set partName(v) { if (this.pinPart != null) this.pinPart = v; if (this.item) { this.item.part = v; store.save('setlists'); } else store.updateMeta(this.scoreId, { part: v }); }
   get tempo() { const it = this.item; return (it && it.tempo) || this.score.tempo || 100; }
@@ -102,6 +98,38 @@ class Viewer {
     document.addEventListener('visibilitychange', this.visHandler);
     this.offBand = onBand(() => this.renderBandBadge());
     await this.loadSong({});
+    if (this.perform) this.prepareShow();
+  }
+
+  // a show starts: every song made ready now (PDFs MuseScore can make here), and what will still be
+  // drawn live is said once, before the first song
+  async prepareShow() {
+    if (this._prep) return this._prep;
+    store.state.performing = true;
+    this._prep = (async () => {
+      const songs = showSongs(this);
+      // the same show again (a musician's iPad opens each song the leader turns to): nothing to do
+      const key = JSON.stringify([songs.map(x => [x.s && x.s.id, x.s && store.songHash(x.s), x.part, x.semis].join('|')).sort(), store.state.settings.readKey, isPhone(this.score)]);
+      if (shown && shown.key === key) { bandReady(shown.rep); return shown.rep; }
+      const rep = await prepareShow(songs, (done, n, title) => {
+        if (n && title) toast(t('מכין את ההופעה: PDF {i} מתוך {n} ({title})', { i: done + 1, n, title }), 60000);
+      });
+      bandReady(rep);
+      shown = { key, rep };
+      if (this.el && !this.el.isConnected) return rep;
+      const bad = [...rep.none, ...rep.failed, ...rep.live];
+      if (!bad.length) { toast(t('ההופעה מוכנה: {n} שירים, כולם כ-PDF', { n: rep.total }), 3500); return rep; }
+      toast('', 1);
+      const row = (x, cls) => h('div', { class: 'li prep-' + cls }, h('b', { dir: 'auto' }, x.title), h('span', { class: 'muted', dir: 'auto' }, x.why));
+      sheet(t('לפני ההופעה'), h('div', {},
+        h('p', {}, t('{ok} מתוך {n} שירים מוכנים כ-PDF.', { ok: rep.ready, n: rep.total })),
+        rep.none.length || rep.failed.length ? h('p', { class: 'hint' }, t('חסרים:')) : null,
+        h('div', { class: 'list' }, ...rep.none.map(x => row(x, 'none')), ...rep.failed.map(x => row(x, 'none'))),
+        rep.live.length ? h('p', { class: 'hint' }, t('יצוירו במצב חי בזמן ההופעה (MuseScore עובד באייפד כשהם נפתחים):')) : null,
+        h('div', { class: 'list' }, ...rep.live.map(x => row(x, 'live')))));
+      return rep;
+    })().finally(() => { this._prep = null; });
+    return this._prep;
   }
 
   destroy() {
@@ -116,6 +144,7 @@ class Viewer {
     this.el.remove();
     document.body.classList.remove('in-viewer');
     if (current === this) current = null;
+    store.state.performing = false;
   }
   close() {
     if (this.noteEd && this.noteEd.dirty) { this.stopNoteEdit().then(() => { if (!this.noteEd) this.close(); }); return; }
@@ -143,19 +172,31 @@ class Viewer {
     await this.annot.load();
     // songs open in page mode (the exact PDF). In another key: MuseScore's PDF of that key (engraved here
     // from the .mscz when the song has one), else live mode (Verovio)
+    // (decided first: a song that will be drawn live anyway is not engraved for nothing)
+    const phone = isPhone(s);
+    const why = phone ? '' : await this.liveReason();
     let exact = !this.semis || store.pdfKeys(s).includes(this.semis);
-    if (!exact && canEngrave(s)) exact = await this.engrave(this.semis);
-    // a phone: a whole PDF page is too small to read there, so the song opens in live mode (laid out for the phone)
-    const phone = s.hasXml && store.state.settings.livePhone !== false && Math.min(window.innerWidth, window.innerHeight) < 600;
+    if (!exact && !phone && !why && s.hasPdf && canEngrave(s)) exact = await this.engrave(this.semis);
     const want = !s.hasPdf || (!exact && s.hasXml) || phone ? 'live' : 'page';
     await this.setMode(want, { atEnd });
   }
 
   docName() { return this.partName ? 'part:' + this.partName : 'score'; }
 
-  async setMode(mode, { atEnd = false } = {}) {
+  // why this part should not be shown from its PDF ('' when it is right): see prepare.js
+  async liveReason() { return this.noteEd ? '' : liveReason(this.score, this.partName); }
+
+  async setMode(mode, { atEnd = false, chosen = false } = {}) {
     const s = this.score;
     if (mode === 'page' && !s.hasPdf) { toast(t('לשיר הזה אין PDF – רק מצב חי')); mode = 'live'; }
+    if (mode === 'page') {
+      const why = await this.liveReason();
+      const said = s.id + '|' + this.partName;
+      // chosen by hand: the PDF is shown, with a warning
+      if (why && chosen) toast(t('שימו לב: ה-PDF הזה בצליל קונצרטי או לא בטון של הכלי שלך'));
+      else if (why) { mode = 'live'; if (this._liveSaid !== said) toast(why); }
+      this._liveSaid = said;
+    }
     if (mode === 'live' && !s.hasXml) { toast(t('מצב חי צריך MusicXML. ב-MuseScore: ייצוא ← MusicXML, וייבוא מחדש')); mode = 'page'; }
     if (this.engine) { this.engine.destroy(); this.engine = null; }
     this.stage.replaceChildren();
@@ -289,10 +330,10 @@ class Viewer {
         this.setlist ? h('span', { class: 'muted' }, `${this.setlist.name} · ${this.index + 1}/${this.setlist.items.length}`) : (s.composer ? h('span', { class: 'muted', dir: 'auto' }, s.composer) : null)),
       // only what is used while playing; the rest is in "more"
       h('div', { class: 'vt-tools' },
-        segmented([{ value: 'page', label: t('דף') }, { value: 'live', label: t('חי') }], this.mode, m => this.setMode(m)),
+        segmented([{ value: 'page', label: t('דף') }, { value: 'live', label: t('חי') }], this.mode, m => this.setMode(m, { chosen: true })),
         h('button', { class: 'vt-text', onclick: () => this.keySheet(), title: t('טון') },
           h('span', {}, keyLabel || t('טון')), this.semis ? h('small', {}, semisLabel(this.semis)) : null),
-        parts.length || this.mode === 'live' ? h('button', { class: 'vt-text vt-part', onclick: () => this.partSheet(), title: t('פרט') }, ...(this.partName || '').split(' + ').map(n => instIcon(n, { score: true })), h('span', { dir: 'auto' }, this.partName || t('פרטיטורה'))) : null,
+        parts.length || this.mode === 'live' ? h('button', { class: 'vt-text vt-part', onclick: () => this.partSheet(), title: t('פרט') }, ...(this.partName || '').split(' + ').map(n => instIcon(n, { score: true })), h('span', { dir: 'auto' }, this.partName || t('פרטיטורה')), this.mode === 'live' && this.engine && this.engine.readKey && this.engine.readKey() ? h('small', { class: 'vt-readkey' }, t('ב-{key}', { key: readKeyLabel(this.engine.readKey()) })) : null) : null,
         this.mode === 'page' ? btn('pen', t('עיפרון'), () => this.startPencil(), 'ghost') : null,
         this.mode === 'live' ? btn('play', t('ניגון'), () => this.engine.playSheet && this.engine.playSheet(), 'ghost') : null,
         // a running metronome stays in reach so it can be stopped
@@ -454,7 +495,7 @@ class Viewer {
       h('button', { class: 'li', onclick: go(() => this.displaySheet()) }, icon('moon'), t('תצוגה')),
       h('button', { class: 'li', onclick: go(() => this.setLocked(true)) }, icon('lock'), t('נעילת מסך')),
       s.versions.length > 1 ? h('button', { class: 'li', onclick: () => { sh.close(); this.versionsSheet(); } }, icon('history'), t('היסטוריית גרסאות')) : null,
-      h('button', { class: 'li', onclick: () => { sh.close(); this.perform = !this.perform; if (this.perform) { this.acquireWake(); this.setLocked(true); } this.renderChrome(); } }, icon('perform'), this.perform ? t('יציאה ממצב הופעה') : t('מצב הופעה')),
+      h('button', { class: 'li', onclick: () => { sh.close(); this.perform = !this.perform; store.state.performing = this.perform; if (this.perform) { this.acquireWake(); this.setLocked(true); this.prepareShow(); } this.renderChrome(); } }, icon('perform'), this.perform ? t('יציאה ממצב הופעה') : t('מצב הופעה')),
       h('button', { class: 'li', onclick: () => { sh.close(); this.addBookmark(); } }, icon('bookmark'), t('סימניה בעמוד הזה')),
       s.hasXml || canEngrave(s) ? h('button', { class: 'li', onclick: () => { sh.close(); this.startNoteEdit(); } }, icon('edit'), t('עריכת תווים')) : null,
       h('button', { class: 'li', onclick: async () => { sh.close(); audioCtx(); (await import('./tuner.js')).openTuner(); } }, icon('tuner'), t('טיונר')),
